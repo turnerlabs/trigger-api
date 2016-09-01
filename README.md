@@ -21,7 +21,12 @@ When a provider is triggered, the api will request for the products state. This 
 ```
 
 The application state can be fed from anywhere. The current model that drives trigger lives in [shipit](shipit).
-The place that trigger reads the state from is just an environment variable, which defaults to `http://localhost:8081`.
+The place that trigger reads the state from is just an environment variable, which defaults to `localhost:8081`.
+
+## Disclaimer
+
+Trigger is being open sourced as we speak. Currently we only
+have the working version internally at Turner. This is the more generic open source that is currently not production ready by any means.
 
 
-[shipit]: https://github.com/turnerlabs/trigger-api
+[shipit]: https://github.com/turnerlabs/shipit-api
