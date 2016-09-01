@@ -33,7 +33,7 @@ function getDeployment(shipment, provider, secrets) {
         },
         spec: {
           containers: shipment.containers,
-          imagePullSecrets: provider.metadata.secrets
+          imagePullSecrets: secrets
         }
       }
     }

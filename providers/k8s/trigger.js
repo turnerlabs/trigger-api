@@ -6,6 +6,7 @@ const setEnvVars = require('../../helpers').setEnvVars;
 const shipitApi = require('../../core/shipitApi');
 const getDeployment = require('./getDeployment');
 const getNamespace = require('./getNamespace');
+const getSecrets = require('./getSecrets');
 
 module.exports = trigger;
 
@@ -29,11 +30,26 @@ function _launchShipment(shipment, provider, client) {
             reject(error);
         })
         .then((data) => {
-            console.log('fetched namespace', data)
-            return createDeployment(shipment, _provider, client);
+            console.log('fetched namespace', data);
+            let promise = getSecrets(shipment, _provider),
+                promises = [];
+                
+            return promise.then((secrets) => {
+                secrets.forEach((secret) => {
+                    promises.push(createSecret(secret, client));
+                });
+                return Promise.all(promises);
+            });
         }, (error) => {
             console.log('ERROR => ', error);
             reject(data);
+        })
+        .then((data) => {
+            console.log('Creating/Updating Deployment');
+            return createDeployment(shipment, _provider, client);
+        }, (error) => {
+            console.log('ERROR => ', error);
+            reject(error);
         }).then((data) => {
             console.log('created deployment', data);
             // set client back
@@ -62,27 +78,67 @@ function createDeployment(shipment, provider, client) {
           
         client.domain = client.endpoint + '/apis/extensions/v1beta1';
         client.get(path).then((data) => {
-            // do nothing as we have already created the namespace
+            // We need to send a PUT here to update our current deployment
             console.log(`Deployment exists for namespace: ${deploymentJson.metadata.name}`);
             // update deployment
-            resolve(data);
+            client.put(`/namespaces/${deploymentJson.metadata.namespace}/deployments/thedeployment`, deploymentJson).then((data) => {
+                resolve(data);
+            }, deploymentCRUDError).catch(errorFunction);
         }, (error) => {
             error = JSON.parse(error);
             if (error.kind === 'Status' && error.code === 404) {
                 client.post(`/namespaces/${deploymentJson.metadata.namespace}/deployments`, deploymentJson).then((data) => {
                     resolve(data);
-                }, (error) => {
-                    if (!error) {
-                        error = {code: 500, message: `Could not Create Deployment for namespace: ${deploymentJson.metadata.name}`}
-                    }
-                    reject(error);
-                }).catch(errorFunction);
+                }, deploymentCRUDError).catch(errorFunction);
             } else {
                 reject(error);
             }
         }).catch(errorFunction);
+        
+        function deploymentCRUDError(error) {
+              if (!error) {
+                  error = {code: 500, message: `Could not Create Deployment for namespace: ${deploymentJson.metadata.name}`}
+              }
+              reject(error);
+        }
     }
 }
+
+function createSecret(secretJson, client) {
+    
+    return new Promise(_getSecret);
+    
+    function _getSecret(resolve, reject) {
+       let path = `namespaces/${secretJson.metadata.namespace}/secrets/${secretJson.metadata.name}`;
+        
+        client.get(path).then((data) => {
+            // secret exists, delete it
+            console.log(`Secret "${secretJson.metadata.name}" exists for namespace: ${secretJson.metadata.namespace}`);
+            return client.delete(`namespaces/${secretJson.metadata.namespace}/secrets/${secretJson.metadata.name}`).then((data) => {
+                return data;
+            }, (error) => {
+                console.log(error)
+                return error;
+            })
+        }, (error) => {
+            return error;
+        }).then((data) => {
+            return postSecret();
+        }, (error) => {
+            reject(error);
+        });
+        
+        function postSecret() {
+          return client.post(`namespaces/${secretJson.metadata.namespace}/secrets`, secretJson).then((data) => {
+              resolve(data);
+          }, (error) => {
+              console.log('error', error)
+              reject(error);
+          }).catch(errorFunction);
+        }
+    }
+}
+
 
 function createNamespace(shipment, provider, client) {
     

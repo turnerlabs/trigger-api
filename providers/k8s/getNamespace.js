@@ -2,7 +2,7 @@
 
 module.exports = getNamespace;
 
-function getNamespace(shipment, provider, secrets) {
+function getNamespace(shipment, provider) {
   let namespace = shipment.name + '-' + shipment.environment;
   return {
     kind: "Namespace",
