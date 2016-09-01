@@ -20,7 +20,7 @@ When a provider is triggered, the api will request for the products state. This 
 /trigger/:shipment/:environment/:provider
 ```
 
-The application state can be fed from anywhere. The current model that drives trigger lives in [shipit](shipit).
+The application state can be fed from anywhere. The current model that drives trigger lives in [Shipit][shipit].
 The place that trigger reads the state from is just an environment variable, which defaults to `localhost:8081`.
 
 ## Disclaimer
