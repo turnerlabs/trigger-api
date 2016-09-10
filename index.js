@@ -40,9 +40,9 @@ function getEndpoints(req, res, next) {
     client.getEndpoints().then((data) => {
         res.send(data);
     }, (error) => {
-        console.log('error', error)
+        console.log('error', error);
         res.status(500);
-        res.json({code: 500, msg: error});
+        res.json({code: 500, message: error});
     });
 }
 
@@ -58,7 +58,8 @@ function trigger(req, res, next) {
     client.trigger(shipment, environment, provider).then((data) => {
         res.send(data);
     }, (error) => {
+        console.log('ERROR =>', error);
         res.status(500);
-        res.json({code: 500, msg: error});
+        res.json({code: 500, message: error});
     });
 }

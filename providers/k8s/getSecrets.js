@@ -37,7 +37,7 @@ function getDockercfgs() {
           if (key.indexOf(DOCKER_KEY) !== -1) {
               dockercfgs.push({name: key.replace(/_/g, '-').toLowerCase(), value: process.env[key]});
           }
-      })
+      });
       resolve(dockercfgs);
   });
 }

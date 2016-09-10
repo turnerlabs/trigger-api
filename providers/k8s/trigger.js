@@ -2,34 +2,40 @@
 
 const deepcopy = require('deepcopy');
 const errorFunction = require('../../helpers/errorFunction');
-const setEnvVars = require('../../helpers').setEnvVars;
 const shipitApi = require('../../core/shipitApi');
 const getDeployment = require('./getDeployment');
 const getNamespace = require('./getNamespace');
 const getSecrets = require('./getSecrets');
+const HEALTHCHECK_DELAY_SECS = 30;
 
 module.exports = trigger;
 
 function trigger(shipment, environment, provider, client) {
-    let promise = shipitApi.getShipment(shipment, environment).catch(errorFunction)
+    let promise = shipitApi.getShipment(shipment, environment)
          //  .then((res) => res.json(), errorFunction)
-        .then((shipment) => _parseShipment(shipment), errorFunction).catch(errorFunction)
-        .then((shipment) => _launchShipment(shipment, provider, client), errorFunction).catch(errorFunction);
+        .then((shipment) => _parseShipment(shipment))
+        .then((shipment) => _launchShipment(shipment, provider, client));
     return promise;
 }
 
 function _launchShipment(shipment, provider, client) {
     let promise = new Promise((resolve, reject) => {
-        let _provider = shipment.getProvider(provider),
-            deployment = getDeployment(shipment, _provider, []);
+        let _provider = shipment.getProvider(provider);
         
         // post namespace to k8s
         createNamespace(shipment, _provider, client).then((data) => {
             return data;
-        }, (error) => {
-            reject(error);
         })
         .then((data) => {
+           // set containers onto shipment as k8s expects
+           return getContainers(shipment, provider);
+        })
+        .then((data) => {
+            // set containers on shipment. These were retrieved from 
+            // the previus step
+            shipment.containers = data.containers;
+            shipment.primary = data.primary;
+            
             console.log('fetched namespace', data);
             let promise = getSecrets(shipment, _provider),
                 promises = [];
@@ -40,27 +46,23 @@ function _launchShipment(shipment, provider, client) {
                 });
                 return Promise.all(promises);
             });
-        }, (error) => {
-            console.log('ERROR => ', error);
-            reject(data);
         })
         .then((data) => {
             console.log('Creating/Updating Deployment');
-            return createDeployment(shipment, _provider, client);
-        }, (error) => {
-            console.log('ERROR => ', error);
-            reject(error);
+            let secrets = data.map((secret) => {
+                return {name: secret.metadata.name};
+            });
+            return createDeployment(shipment, _provider, secrets, client);
         }).then((data) => {
             console.log('created deployment', data);
             // set client back
             client.domain = client.endpoint + client.version + '/';
             resolve(data);
         }, (error) => {
-            console.log('ERROR => ', error);
             // set client back
             client.domain = client.endpoint + client.version + '/';
             reject(error);
-        })
+        });
         // post deployment to k8s
 
         // create ELB of specified type. Only allow ALB for now.
@@ -69,11 +71,11 @@ function _launchShipment(shipment, provider, client) {
     return promise;
 }
 
-function createDeployment(shipment, provider, client) {
+function createDeployment(shipment, provider, secrets, client) {
     return new Promise(_getDeployment);
     
     function _getDeployment(resolve, reject) {
-       let deploymentJson = getDeployment(shipment, provider),
+       let deploymentJson = getDeployment(shipment, provider, secrets),
            path = `/namespaces/${deploymentJson.metadata.namespace}/deployments/thedeployment`;
           
         client.domain = client.endpoint + '/apis/extensions/v1beta1';
@@ -104,6 +106,116 @@ function createDeployment(shipment, provider, client) {
     }
 }
 
+function getContainers(shipment, provider) {
+  
+    return new Promise(_getContainers);
+    
+    function _getContainers(resolve, reject) {
+        
+        let containers = shipment.containers.map((container) => {
+            container.config = {};
+            container.config.PRODUCT = shipment.name;
+            container.config.ENVIRONMENT = shipment.parentShipment.name;
+            container.config.LOCATION = provider;
+            
+            // could get the config from the manifest here, but nah
+            
+            // test for valid HEALTHCHECK
+            let healthcheck = getHealthchecks(container);
+            
+            if (healthcheck.message) {
+                reject(healthcheck.message);
+                return healthcheck.message;
+            }
+            
+            if (healthcheck.protocol === 'tcp') {
+                container.livenessProbe = { 
+                  type: 'tcp', 
+                  initialDelaySeconds: HEALTHCHECK_DELAY_SECS,
+                  tcpSocket: { port: healthcheck.value }
+                }
+            } else {
+                container.livenessProbe = {
+                  type: 'http', 
+                  initialDelaySeconds: HEALTHCHECK_DELAY_SECS,
+                  httpGet: { path: healthcheck.healthcheck, port: healthcheck.value }
+                }
+            }
+            
+            container.env = container.envVars;
+            return container;
+        });
+        
+        // this is the primary object that gives us information for edge level healthchecks
+        let primary = getPrimaryContainer(shipment.containers);
+        
+        if (primary.message) {
+            reject(primary.message);
+            return primary.message;
+        }
+        
+        console.log('INFO', 'Primary Container', primary.container);
+        console.log('INFO', 'Primary Port', primary.port);
+        resolve({containers, primary});
+    }
+}
+
+function getPrimaryContainer(containers) {
+    let primary;
+        
+    containers.forEach((container) => {
+        let primaryPorts = container.ports.filter((port) => {
+            if (port.primary) {
+                return port;
+            }
+        });
+        
+        container.ports = container.ports.map((port) => {
+            return {containerPort: port.value};
+        });
+        
+        if (primaryPorts.length > 1) {
+            primary = {code: 500, message: `Multiple primary ports configured for container ${container.name}, only one allowed per container`};
+        }  else if (primaryPorts.length === 1) {
+            if (primary) {
+                primary = {code: 500, message: `Multiple primary ports across multiple containers, only allowed one primary port per shipment`};
+            } else {
+                primary = {
+                  port: primaryPorts[0],
+                  container: container
+                };  
+            }
+        }
+    });
+    
+    if (!primary) {
+        primary = {code: 500, message: `No primary port defined on shipment`};
+    }
+    
+    return primary;
+}
+
+function getHealthchecks(container) {
+  
+    if (!container.ports) {
+        return {code: 500, message: `No ports found on container ${container.name}, check configuration`};
+    }
+    
+    let healthchecks = container.ports.filter((port) => {
+        if (port.healthcheck) {
+            return port;
+        }
+    });
+    
+    if (healthchecks.length === 0) {
+        return {code: 500, message: `No healthcheck found on any ports for container ${container.name}, check configuration`};
+    } else if (healthchecks.length > 1) {
+        return {code: 500, message: `Ambiguous healthcheck found for container ${container.name}, only one healthcheck allowed per container`};
+    }
+    
+    return healthchecks[0];
+}
+
 function createSecret(secretJson, client) {
     
     return new Promise(_getSecret);
@@ -117,11 +229,12 @@ function createSecret(secretJson, client) {
             return client.delete(`namespaces/${secretJson.metadata.namespace}/secrets/${secretJson.metadata.name}`).then((data) => {
                 return data;
             }, (error) => {
-                console.log(error)
-                return error;
-            })
+                console.log('ERROR =>', `${secretJson.metadata.namespace} Error Deleting Secret`);
+                reject(false);
+            });
         }, (error) => {
-            return error;
+            console.log('INFO =>', `404: ${secretJson.metadata.namespace} Not Found`);
+            return false;
         }).then((data) => {
             return postSecret();
         }, (error) => {
@@ -132,13 +245,11 @@ function createSecret(secretJson, client) {
           return client.post(`namespaces/${secretJson.metadata.namespace}/secrets`, secretJson).then((data) => {
               resolve(data);
           }, (error) => {
-              console.log('error', error)
               reject(error);
           }).catch(errorFunction);
         }
     }
 }
-
 
 function createNamespace(shipment, provider, client) {
     
@@ -169,67 +280,9 @@ function createNamespace(shipment, provider, client) {
 
 function _parseShipment(rawShipment) {
     let promise = new Promise((resolve, reject) => {
-        let shipment = new Shipment(rawShipment);
+        let shipment = new shipitApi.Shipment(rawShipment);
         resolve(shipment);
     });
     
     return promise;
-}
-
-
-class Shipment {
-  constructor(raw) {
-      Object.assign(this, { parentShipment: raw.parentShipment, providers: raw.providers, containers: raw.containers });
-      this.name = raw.parentShipment.name;
-      this.environment = raw.name;
-      this.envVars = raw.envVars;
-  }
-  
-  getProviders() {
-      let envVars = [],
-          providers = [];
-          
-      this.providers.map((provider) => {
-          let containers = [];
-          envVars = setEnvVars(envVars, this.parentShipment.envVars);
-          envVars = setEnvVars(envVars, this.envVars);
-          envVars = setEnvVars(envVars, provider.envVars);
-          
-          this.containers.map((container) => {
-              let containerEnvVars = [];
-              let copiedContainer = deepcopy(container);
-              containerEnvVars = setEnvVars(containerEnvVars, envVars);
-              containerEnvVars = setEnvVars(containerEnvVars, container.envVars);
-              copiedContainer.envVars = containerEnvVars;
-              containers.push(copiedContainer);
-          });
-          
-          providers.push({
-            name: provider.name, 
-            replicas: provider.replicas,
-            metadata: provider.metadata,
-            envVars, 
-            containers
-          });
-      });
-      
-      return providers;
-  }
-  
-  getProvider(providerName) {
-      let providers = this.getProviders(),
-          requestedProvider;
-          
-      providers.forEach((provider) => {
-          if (provider.name === providerName) {
-              requestedProvider = provider;
-          }
-      });
-      
-      if (!requestedProvider) {
-          console.log(`No provider found in shipment:${this.name}-${this.environment} with name ${providerName}`)
-      }
-      
-      return requestedProvider;
-  }
 }
