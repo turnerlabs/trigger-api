@@ -2,10 +2,12 @@
 
 const deepcopy = require('deepcopy');
 const errorFunction = require('../../helpers/errorFunction');
+const setEnvVars = require('../../helpers').setEnvVars;
 const shipitApi = require('../../core/shipitApi');
 const getDeployment = require('./getDeployment');
 const getNamespace = require('./getNamespace');
 const getSecrets = require('./getSecrets');
+const getServiceData = require('./getService');
 const HEALTHCHECK_DELAY_SECS = 30;
 
 module.exports = trigger;
@@ -27,8 +29,11 @@ function _launchShipment(shipment, provider, client) {
             return data;
         })
         .then((data) => {
+            return createService(shipment, client);
+        })
+        .then((data) => {
            // set containers onto shipment as k8s expects
-           return getContainers(shipment, provider);
+           return getContainers(shipment, _provider);
         })
         .then((data) => {
             // set containers on shipment. These were retrieved from 
@@ -106,17 +111,70 @@ function createDeployment(shipment, provider, secrets, client) {
     }
 }
 
+function createService(shipment, client) {
+    
+    let namespace = shipment.name + '-' + shipment.environment;
+    return new Promise(_getService);
+    
+    function _getService(resolve, reject) {
+       let path = `namespaces/${namespace}/services`;
+        
+        client.get(path).then((data) => {
+            let services;
+            // if service exists, return this value, if not then let's create a new one
+            if (data.items.length > 0) { 
+                console.log(`Service "${shipment.name}" exists`);
+                services = data.items.filter((service) => {
+                    if (service.metadata.labels && service.metadata.labels.name === shipment.name && service.metadata.labels.environment === shipment.environment ) {
+                        return service;
+                    }
+                });
+                if (services[0]) {
+                    return services[0];
+                } else {
+                    // did not find service 
+                    return false;
+                }
+            } else {
+              return false;
+            }
+        }, (error) => {
+            console.log('INFO =>', `404: Service ${namespace} Not Found`);
+            return false;
+        }).then((data) => {
+            if (!data) {
+                return postService();
+            } else {
+                resolve(data);
+                return data;
+            }
+        }, (error) => {
+            reject(error);
+        });
+        
+        function postService() {
+          return getServiceData(shipment, client).then((serviceJson) => {
+              return client.post(`namespaces/${namespace}/services`, serviceJson).then((data) => {
+                  resolve(data);
+              }, (error) => {
+                  reject(error);
+              }).catch(errorFunction);
+          });
+        }
+    }
+}
+
 function getContainers(shipment, provider) {
   
     return new Promise(_getContainers);
     
     function _getContainers(resolve, reject) {
         
-        let containers = shipment.containers.map((container) => {
+        let containers = provider.containers.map((container) => {
             container.config = {};
             container.config.PRODUCT = shipment.name;
-            container.config.ENVIRONMENT = shipment.parentShipment.name;
-            container.config.LOCATION = provider;
+            container.config.ENVIRONMENT = shipment.environment;
+            container.config.LOCATION = provider.name;
             
             // could get the config from the manifest here, but nah
             
@@ -141,13 +199,19 @@ function getContainers(shipment, provider) {
                   httpGet: { path: healthcheck.healthcheck, port: healthcheck.value }
                 }
             }
-            
-            container.env = container.envVars;
+        
+            container.config.HEALTHCHECK = healthcheck.healthcheck;
+            container.config.PORT = healthcheck.value;
+            container.env = [];
+            for (let key in container.config) {
+                container.env.push({name: key, value: container.config[key] + ''});
+            }
+            container.env = setEnvVars(container.env, container.envVars);
             return container;
         });
         
         // this is the primary object that gives us information for edge level healthchecks
-        let primary = getPrimaryContainer(shipment.containers);
+        let primary = getPrimaryContainer(provider.containers);
         
         if (primary.message) {
             reject(primary.message);

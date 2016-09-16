@@ -8,18 +8,18 @@ module.exports = { getShipment };
 
 function getShipment(shipment, environment) {
     return new Promise((resolve, reject) => {
-        resolve({name: 'foo', parentShipment: {name: 'bar'}, 
+        resolve({name: 'foo', parentShipment: {name: 'bar', envVars: [{type: 'basic', name: 'FOO', value: 'BAR'}]}, 
           containers: [{
             name: 'hello-world',
             image: 'quay.io/turner/hello-world:0.1.2',
             ports: [{
                 primary: true,
-                healthcheck: '/hc',
+                healthcheck: '/_healthcheck.txt',
                 value: 8080,
                 name: 'PORT'
             }],
-            envVars: [{name: 'TEST', value: 'foobar', type: 'basic'}]
-          }], 
+            envVars: [],
+          }],
           providers: [{
             name: 'gke_mss-cloud-arch-1331_us-east1-b_spinnaker',
             replicas: 1,
@@ -28,7 +28,7 @@ function getShipment(shipment, environment) {
                 version: 'extensions/v1beta1',
                 secrets: []
             },
-            envVars: [{type: 'basic', name: 'PORT', value: 8080}, {type: 'basic', name: 'HEALTHCHECK', value: '/hc'}]
+            envVars: [{type: 'basic', name: 'PORT', value: 8080}, {type: 'basic', name: 'HEALTHCHECK', value: '/_healthcheck.txt'}]
         }]});
     });
     //return fetch(`${SHIPIT_URI}/v1/${shipment}/${environment}`)

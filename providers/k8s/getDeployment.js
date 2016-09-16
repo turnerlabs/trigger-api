@@ -5,7 +5,7 @@ module.exports = getDeployment;
 function getDeployment(shipment, provider, secrets) {
   let product = shipment.name,
       environment = shipment.environment;
-      
+         
   return {
     kind: 'Deployment',
     apiVersion: 'extensions/v1beta1',
